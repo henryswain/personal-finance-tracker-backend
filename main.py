@@ -1,24 +1,3 @@
-# from fastapi import FastAPI, HTTPException, Depends
-# from pydantic import BaseModel
-# from typing import Annotated, List
-# import models
-# from database import engine, SessionLocal
-# from sqlalchemy.orm import Session
-
-# app = FastAPI()
-# models.Base.metadata.creat_all(bind=engine)
-
-# def get_db():
-#     db = SessionLocal()
-#     try:
-#         yield db
-#     finally:
-#         db.close
-
-# db_dependancy = Annotated[Session, Depends(get_db)]
-
-
-
 from typing import Annotated, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query
@@ -37,15 +16,12 @@ URL = os.getenv('URL_DATABASE')
 
 engine = create_engine(URL)
 
-# sqlite_file_name = "database.db"
-# sqlite_url = f"sqlite:///{sqlite_file_name}"
-
 connect_args = {"check_same_thread": False}
 engine = create_engine(URL)
 
 class Transaction(SQLModel, table=True):
     id: UUID | None = Field(default_factory=uuid4, primary_key=True)
-    amount: float | None = Field(index=True)
+    amount: int | None = Field(index=True)
     title: str | None = Field(index = True)
     memo: str | None = Field(default=None, index=True)
     account_name: str | None = Field(default=None, index=True)
@@ -80,18 +56,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class Update(BaseModel):
-    amount: int | None = None
-    title: str | None = None
-    memo: str | None = None
-    account_name: str | None = None
-    transfer_from: str | None = None
-    category: str | None = None
-
-# @app.on_event("startup")
-# def on_startup():
-#     create_db_and_tables()
-
 
 @app.post("/transaction")
 def create_transaction(transaction: Transaction, session: SessionDep) -> dict:
@@ -104,19 +68,8 @@ def create_transaction(transaction: Transaction, session: SessionDep) -> dict:
     session.refresh(transaction)
     return {"status": 200, "data": transaction}
 
-# @app.put("/transactions/{transaction_id}")
-# def update_transaction(session: SessionDep, transaction_id: int, updates: Update) -> Transaction:
-#     statement = select(Transaction).where(Transaction.id == transaction_id)
-#     result = session.exec(statement)
-#     for key in updates:
-#         result[key] = updates[key]
-#     session.add(result)
-#     session.commit()
-#     session.refresh(result)
-#     return result
-
 @app.patch("/transactions/{transaction_id}")
-def update_transaction(transaction_id: UUID, transaction: Update) -> dict:
+def update_transaction(transaction_id: UUID, transaction: Transaction) -> dict:
     with Session(engine) as session:
         db_transaction = session.get(Transaction, transaction_id)
         if not db_transaction:
@@ -127,8 +80,6 @@ def update_transaction(transaction_id: UUID, transaction: Update) -> dict:
         session.commit()
         session.refresh(db_transaction)
         return {"status": 200, "data": db_transaction}
-     
-
 
 @app.get("/transactions/")
 def read_transactions(
