@@ -24,7 +24,7 @@ from typing import Annotated, Optional
 from fastapi import Depends, FastAPI, HTTPException, Query
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 import os
-from uuid import UUID
+from uuid import UUID, uuid4
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
@@ -42,6 +42,14 @@ engine = create_engine(URL)
 
 connect_args = {"check_same_thread": False}
 engine = create_engine(URL)
+
+class Transaction(SQLModel, table=True):
+    id: UUID | None = Field(default_factory=uuid4, primary_key=True)
+    amount: float | None = Field(index=True)
+    title: str | None = Field(index = True)
+    memo: str | None = Field(default=None, index=True)
+    account_name: str | None = Field(default=None, index=True)
+    category: str | None = Field(default=None, index=True)
 
 
 def create_db_and_tables():
@@ -68,30 +76,25 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["post", "patch", "get", "delete"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
-class Transaction(SQLModel, table=True):
-    id: UUID | None = Field(default=None, primary_key=True)
-    amount: int | None = Field(index=True)
-    memo: str | None = Field(default=None, index=True)
-    account_name: str | None = Field(default=None, index=True)
-    transfer_from: str | None = Field(default=None, index=True)
-
 class Update(BaseModel):
     amount: int | None = None
+    title: str | None = None
     memo: str | None = None
     account_name: str | None = None
     transfer_from: str | None = None
+    category: str | None = None
 
 # @app.on_event("startup")
 # def on_startup():
 #     create_db_and_tables()
 
 
-@app.post("/transactions/")
-def create_transaction(transaction: Transaction, session: SessionDep) -> Transaction:
+@app.post("/transaction")
+def create_transaction(transaction: Transaction, session: SessionDep) -> dict:
     try:
         session.add(transaction)
     except Exception as err:
@@ -99,7 +102,7 @@ def create_transaction(transaction: Transaction, session: SessionDep) -> Transac
         raise
     session.commit()
     session.refresh(transaction)
-    return transaction
+    return {"status": 200, "data": transaction}
 
 # @app.put("/transactions/{transaction_id}")
 # def update_transaction(session: SessionDep, transaction_id: int, updates: Update) -> Transaction:
@@ -113,7 +116,7 @@ def create_transaction(transaction: Transaction, session: SessionDep) -> Transac
 #     return result
 
 @app.patch("/transactions/{transaction_id}")
-def update_transaction(transaction_id: int, transaction: Update):
+def update_transaction(transaction_id: UUID, transaction: Update) -> dict:
     with Session(engine) as session:
         db_transaction = session.get(Transaction, transaction_id)
         if not db_transaction:
@@ -123,7 +126,7 @@ def update_transaction(transaction_id: int, transaction: Update):
         session.add(db_transaction)
         session.commit()
         session.refresh(db_transaction)
-        return db_transaction
+        return {"status": 200, "data": db_transaction}
      
 
 
@@ -131,22 +134,25 @@ def update_transaction(transaction_id: int, transaction: Update):
 def read_transactions(
     session: SessionDep,
     offset: int = 0,
-    limit: Annotated[int, Query(le=100)] = 100,
-) -> list[Transaction]:
-    transactions = session.exec(select(Transaction).offset(offset).limit(limit)).all()
-    return transactions
+    limit: Optional[int] = Query(None, gt=0, le=100), # Optional, no default, between 1 and 100 if provided
+) -> dict:
+    query = select(Transaction).offset(offset)
+    if limit is not None:
+        query = query.limit(limit)
+    transactions = session.exec(query).all()
+    return {"status": 200, "data": transactions}
 
 
 @app.get("/transactions/{transaction_id}")
-def read_transaction(transaction_id: int, session: SessionDep) -> Transaction:
+def read_transaction(transaction_id: UUID, session: SessionDep) -> dict:
     transaction = session.get(Transaction, transaction_id)
     if not transaction:
         raise HTTPException(status_code=404, detail="Hero not found")
-    return transaction
+    return {"status": 200, "data": transaction}
 
 
 @app.delete("/transactions/{transaction_id}")
-def delete_transaction(transaction_id: int, session: SessionDep):
+def delete_transaction(transaction_id: UUID, session: SessionDep) -> dict:
     transaction = session.get(Transaction, transaction_id)
     if not transaction:
         raise HTTPException(status_code=404, detail="Hero not found")
