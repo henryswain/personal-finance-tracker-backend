@@ -1,5 +1,4 @@
 from typing import Annotated, Optional
-
 from fastapi import Depends, FastAPI, HTTPException, Query
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 import os
@@ -26,6 +25,7 @@ class Transaction(SQLModel, table=True):
     memo: str | None = Field(default=None, index=True)
     account_name: str | None = Field(default=None, index=True)
     category: str | None = Field(default=None, index=True)
+    date: str | None = Field(default=None, index=True)
 
 
 def create_db_and_tables():
@@ -87,7 +87,7 @@ def read_transactions(
     offset: int = 0,
     limit: Optional[int] = Query(None, gt=0, le=100), # Optional, no default, between 1 and 100 if provided
 ) -> dict:
-    query = select(Transaction).offset(offset)
+    query = select(Transaction).order_by(Transaction.date.desc()).offset(offset)
     if limit is not None:
         query = query.limit(limit)
     transactions = session.exec(query).all()
