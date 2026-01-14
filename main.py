@@ -1,6 +1,6 @@
 from typing import Annotated, Optional
 from fastapi import Depends, FastAPI, HTTPException, Query
-from sqlmodel import Field, Session, SQLModel, create_engine, select
+from sqlmodel import Field, Session, SQLModel, create_engine, select, func
 import os
 from uuid import UUID, uuid4
 from pydantic import BaseModel
@@ -26,7 +26,6 @@ class Transaction(SQLModel, table=True):
     account_name: str | None = Field(default=None, index=True)
     category: str | None = Field(default=None, index=True)
     date: str | None = Field(default=None, index=True)
-
 
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)
@@ -59,11 +58,7 @@ app.add_middleware(
 
 @app.post("/transaction")
 def create_transaction(transaction: Transaction, session: SessionDep) -> dict:
-    try:
-        session.add(transaction)
-    except Exception as err:
-        print(f"Unexpected {err=} trying session.add(transaction), {type(err)=}")
-        raise
+    session.add(transaction)
     session.commit()
     session.refresh(transaction)
     return {"status": 200, "data": transaction}
@@ -87,11 +82,35 @@ def read_transactions(
     offset: int = 0,
     limit: Optional[int] = Query(None, gt=0, le=100), # Optional, no default, between 1 and 100 if provided
 ) -> dict:
-    query = select(Transaction).order_by(Transaction.date.desc()).offset(offset)
+    
+    # Calculate running total ordered by date (oldest first)
+    running_total = func.sum(Transaction.amount).over(order_by=Transaction.date.asc())
+    
+    # Select transaction with running total, ordered by date ascending for calculation
+    query = select(Transaction, running_total.label('running_total')).order_by(Transaction.date.asc())
+    
+    # Apply offset and limit
+    if offset:
+        query = query.offset(offset)
     if limit is not None:
         query = query.limit(limit)
-    transactions = session.exec(query).all()
-    return {"status": 200, "data": transactions}
+    
+    # Execute query
+    results = session.exec(query).all()
+    
+    # Reverse to show newest first, but running total is still calculated from oldest
+    results_reversed = list(reversed(results))
+    
+    # Format the response
+    transactions_with_totals = [
+        {
+            **transaction.model_dump(),
+            "running_total": running_total
+        }
+        for transaction, running_total in results_reversed
+    ]
+    
+    return {"status": 200, "data": transactions_with_totals}
 
 
 @app.get("/transactions/{transaction_id}")
