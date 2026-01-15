@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -58,23 +59,49 @@ app.add_middleware(
 
 @app.post("/transaction")
 def create_transaction(transaction: Transaction, session: SessionDep) -> dict:
-    session.add(transaction)
+    now = datetime.now()
+    print("now: ", now)
+    currentTime = now.strftime("%H:%M:%S")
+    print("currentTime: ", currentTime)
+    
+    # Create a Transaction object, not a dictionary
+    newTransaction = Transaction(
+        amount=transaction.amount,
+        title=transaction.title,
+        memo=transaction.memo,
+        account_name=transaction.account_name,
+        category=transaction.category,
+        date=transaction.date + "T" + currentTime
+    )
+    
+    session.add(newTransaction)
     session.commit()
-    session.refresh(transaction)
-    return {"status": 200, "data": transaction}
+    session.refresh(newTransaction)
+    return {"status": 200, "data": newTransaction}
 
 @app.patch("/transactions/{transaction_id}")
-def update_transaction(transaction_id: UUID, transaction: Transaction) -> dict:
-    with Session(engine) as session:
-        db_transaction = session.get(Transaction, transaction_id)
-        if not db_transaction:
-            raise HTTPException(status_code=404, detail="Hero not found")
-        transaction_data = transaction.model_dump(exclude_unset=True)
-        db_transaction.sqlmodel_update(transaction_data)
-        session.add(db_transaction)
-        session.commit()
-        session.refresh(db_transaction)
-        return {"status": 200, "data": db_transaction}
+def update_transaction(transaction_id: UUID, transaction: Transaction, session: SessionDep) -> dict:
+    db_transaction = session.get(Transaction, transaction_id)
+    if not db_transaction:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    
+    now = datetime.now()
+    print("now: ", now)
+    currentTime = now.strftime("%H:%M:%S")
+    print("currentTime: ", currentTime)
+    
+    # Get only the fields that were provided in the request
+    transaction_data = transaction.model_dump(exclude_unset=True)
+    
+    # If date is being updated, append current time to it
+    transaction_data["date"] = transaction_data["date"] + "T" + currentTime
+    
+    # Update the existing transaction
+    db_transaction.sqlmodel_update(transaction_data)
+    session.add(db_transaction)
+    session.commit()
+    session.refresh(db_transaction)
+    return {"status": 200, "data": db_transaction}
 
 @app.get("/transactions/")
 def read_transactions(
