@@ -107,15 +107,19 @@ def update_transaction(transaction_id: UUID, transaction: Transaction, session: 
 def read_transactions(
     session: SessionDep,
     offset: int = 0,
-    limit: Optional[int] = Query(None, gt=0, le=100), # Optional, no default, between 1 and 100 if provided
+    limit: Optional[int] = Query(None, gt=0, le=100), # Optional, no default, between 1 and 100 if provided,
+    filter_type: Optional[str] = None,
+    filter_value: Optional[str] = None
 ) -> dict:
     
     # Calculate running total ordered by date (oldest first)
     running_total = func.sum(Transaction.amount).over(order_by=Transaction.date.asc())
     
-    # Select transaction with running total, ordered by date ascending for calculation
-    query = select(Transaction, running_total.label('running_total')).order_by(Transaction.date.asc())
-    
+    if filter_type and filter_value:
+        query = select(Transaction, running_total.label("running_total")).where(getattr(Transaction, filter_type) == filter_value).order_by(Transaction.date.asc())
+    else:
+        query = select(Transaction, running_total.label('running_total')).order_by(Transaction.date.asc())
+
     # Apply offset and limit
     if offset:
         query = query.offset(offset)
