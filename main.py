@@ -28,6 +28,23 @@ class Transaction(SQLModel, table=True):
     category: str | None = Field(default=None, index=True)
     date: str | None = Field(default=None, index=True)
 
+
+class Pot(SQLModel, table=True):
+    pot_id: UUID | None = Field(default_factory=uuid4, primary_key=True)
+    title: str | None = Field(index=True)
+    target_amount: int | None = Field(index=True)
+    amount: int | None = Field(default_factory=lambda: 0, index=True)
+
+
+class PotItem(SQLModel, table=True):
+    pot_item_id: UUID | None = Field(default_factory=uuid4, primary_key=True)
+    pot_id: UUID = Field(foreign_key="pot.pot_id", index=True)
+    amount: int | None = Field(index=True)
+    title: str | None = Field(index=True)
+    transfer_from: str | None = Field(index=True)
+    transfer_to: str | None = Field(index=True)
+    date: str | None = Field(default=None, index=True)
+
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)
 
@@ -55,6 +72,202 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.post("/pot")
+def create_pot(pot: Pot, session: SessionDep) -> dict:
+    now = datetime.now()
+    print("now: ", now)
+    currentTime = now.strftime("%H:%M:%S")
+    print("currentTime: ", currentTime)
+    
+    # Create a Pot object, not a dictionary
+    newPot = Pot(
+        target_amount=pot.target_amount,
+        title=pot.title
+    )
+    
+    session.add(newPot)
+    session.commit()
+    session.refresh(newPot)
+    return {"status": 200, "data": newPot}
+
+@app.delete("/pots/{pot_id}")
+def delete_pot(pot_id: UUID, session: SessionDep) -> dict:
+    pot = session.get(Pot, pot_id)
+    if not pot:
+        raise HTTPException(status_code=404, detail="Hero not found")
+    session.delete(pot)
+    session.commit()
+    return {"ok": True}
+
+@app.delete("/pot_items/{pot_id}")
+def delete_pot_item(pot_item_id: UUID, session: SessionDep) -> dict:
+    pot_item = session.get(Pot, pot_item_id)
+    if not pot_item:
+        raise HTTPException(status_code=404, detail="Hero not found")
+    session.delete(pot_item)
+    session.commit()
+    return {"ok": True}
+
+@app.get("/pots/{pot_id}")
+def get_pot(pot_id: UUID, session: SessionDep) -> dict:
+    pot = session.get(Pot, pot_id)
+    return {"data": pot}
+
+@app.post("/pot_item/{pot_id}")
+def create_pot_item(pot_item: PotItem, pot_id: str, session: SessionDep) -> dict:
+    db_pot = session.exec(select(Pot).where(Pot.pot_id == pot_id)).first()
+    if not db_pot:
+        raise HTTPException(status_code=404, detail="Pot not found")
+    
+    db_pot.amount = db_pot.amount + pot_item.amount
+    now = datetime.now()
+    print("now: ", now)
+    currentTime = now.strftime("%H:%M:%S")
+    
+    # Create a PotItem object
+    newPotItem = PotItem(
+        pot_id=pot_id,
+        amount=pot_item.amount,
+        title=pot_item.title,
+        transfer_from=pot_item.transfer_from,
+        transfer_to=pot_item.transfer_to,
+        date=pot_item.date + "T" + currentTime
+    )
+    
+    session.add(newPotItem)
+    session.add(db_pot)
+    session.commit()
+    session.refresh(newPotItem)
+    return {"status": 200, "data": newPotItem}
+
+@app.patch("/pot_items/{pot_id}")
+def update_pot_item(pot_id: UUID, pot_item: PotItem, prevous_pot_item_amount: int, session: SessionDep) -> dict:
+    print("prevous_pot_item_amount: ", prevous_pot_item_amount)
+    print("pot_id: ", pot_id)
+    
+    # Get the pot directly using pot_id from URL
+    db_pot = session.get(Pot, pot_id)
+    print("db_pot: ", db_pot)
+    if not db_pot:
+        raise HTTPException(status_code=404, detail="Pot not found")
+    
+    # Get the pot item using pot_item_id from the request body
+    db_pot_item = session.exec(select(PotItem).where(PotItem.pot_id == pot_id)).first()
+    print("db_pot_item: ", db_pot_item)
+    if not db_pot_item:
+        raise HTTPException(status_code=404, detail="pot item not found")
+    
+    # Update the pot's total amount
+    db_pot.amount = db_pot.amount - prevous_pot_item_amount + pot_item.amount
+    
+    now = datetime.now()
+    print("now: ", now)
+    currentTime = now.strftime("%H:%M:%S")
+    print("currentTime: ", currentTime)
+    
+    # Get only the fields that were provided in the request
+    pot_item_data = pot_item.model_dump(exclude_unset=True)
+    
+    if "date" in pot_item_data:
+        pot_item_data["date"] = pot_item_data["date"] + "T" + currentTime
+    
+    # Update the existing pot item
+    db_pot_item.sqlmodel_update(pot_item_data)
+    session.add(db_pot_item)
+    session.add(db_pot)
+    session.commit()
+    session.refresh(db_pot_item)
+    return {"status": 200, "data": db_pot_item}
+
+@app.patch("/pots/{pot_id}")
+def update_pot(pot_id: UUID, pot: Pot, session: SessionDep) -> dict:
+    db_pot = session.get(Pot, pot_id)
+    # Get only the fields that were provided in the request
+    pot_data = pot.model_dump(exclude_unset=True)
+    
+    # Update the existing transaction
+    db_pot.sqlmodel_update(pot_data)
+    session.add(db_pot)
+    session.commit()
+    session.refresh(db_pot)
+    return {"status": 200, "data": db_pot}
+
+@app.get("/pot_items/{pot_id}")
+def read_pot_items(
+    pot_id: str,
+    session: SessionDep,
+    offset: int = 0,
+    limit: Optional[int] = Query(None, gt=0, le=100), # Optional, no default, between 1 and 100 if provided,
+) -> dict:
+    
+    # Calculate running total ordered by date (oldest first)
+    running_total = func.sum(PotItem.amount).over(order_by=PotItem.date.asc())
+    
+
+    query = select(PotItem, running_total.label('running_total')).where(Pot.pot_id == pot_id).order_by(PotItem.date.asc())
+
+    # Apply offset and limit
+    if offset:
+        query = query.offset(offset)
+    if limit is not None:
+        query = query.limit(limit)
+    
+    # Execute query
+    results = session.exec(query).all()
+    
+    # Reverse to show newest first, but running total is still calculated from oldest
+    results_reversed = list(reversed(results))
+    
+    # Format the response
+    pots_with_totals = [
+        {
+            **pot.model_dump(),
+            "running_total": running_total
+        }
+        for pot, running_total in results_reversed
+    ]
+    
+    return {"status": 200, "data": pots_with_totals}
+
+@app.get("/pots")
+def read_pots(
+    session: SessionDep,
+    offset: int = 0,
+    limit: Optional[int] = Query(None, gt=0, le=100), # Optional, no default, between 1 and 100 if provided,
+) -> dict:
+
+
+    query = select(Pot)
+
+    # Apply offset and limit
+    if offset:
+        query = query.offset(offset)
+    if limit is not None:
+        query = query.limit(limit)
+
+    results = session.exec(query).all()
+    
+    return {"status": 200, "data": results}
+
+
+
+@app.get("/transactions/{transaction_id}")
+def read_transaction(transaction_id: UUID, session: SessionDep) -> dict:
+    transaction = session.get(Transaction, transaction_id)
+    if not transaction:
+        raise HTTPException(status_code=404, detail="Hero not found")
+    return {"status": 200, "data": transaction}
+
+
+@app.delete("/transactions/{transaction_id}")
+def delete_transaction(transaction_id: UUID, session: SessionDep) -> dict:
+    transaction = session.get(Transaction, transaction_id)
+    if not transaction:
+        raise HTTPException(status_code=404, detail="Hero not found")
+    session.delete(transaction)
+    session.commit()
+    return {"ok": True}
 
 
 @app.post("/transaction")
