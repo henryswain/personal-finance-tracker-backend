@@ -1,5 +1,7 @@
+import base64
+import json
 from typing import Annotated, Optional
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from sqlmodel import Field, Session, SQLModel, create_engine, select, func
 from sqlalchemy import case
 import os
@@ -73,6 +75,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+def encode_cursor(value):
+    raw = json.dumps({"date": value})
+    return base64.urlsafe_b64encode(raw.encode()).decode()
+
+def decode_cursor(cursor):
+    try:
+        # Add padding if needed (base64 strings must be multiples of 4)
+        padding = 4 - (len(cursor) % 4)
+        if padding and padding != 4:
+            cursor += '=' * padding        
+        raw = base64.urlsafe_b64decode(cursor.encode()).decode()
+        payload = json.loads(raw)
+        return payload.get("date")
+    except Exception as e:
+        print(f"Cursor decode error: {e}")
+        raise HTTPException(status_code=400, detail="Invalid cursor")
+
 
 @app.post("/pot")
 def create_pot(pot: Pot, session: SessionDep) -> dict:
@@ -341,31 +361,35 @@ def update_transaction(transaction_id: UUID, transaction: Transaction, session: 
 @app.get("/transactions/")
 def read_transactions(
     session: SessionDep,
-    offset: int = 0,
+    request: Request,
+    cursor: Optional[str] = None,
     limit: Optional[int] = Query(None, gt=0, le=100), # Optional, no default, between 1 and 100 if provided,
     filter_type: Optional[str] = None,
-    filter_value: Optional[str] = None
+    filter_value: Optional[str] = None,
 ) -> dict:
-    
+    cursor_id = encode_cursor(datetime.now().strftime("%Y-%m-%dT%H:%M:%S"))    
+    if cursor:
+        cursor_id= decode_cursor(cursor)
     # Calculate running total ordered by date (oldest first)
     running_total = func.sum(Transaction.amount).over(order_by=Transaction.date.asc())
-    
     if filter_type and filter_value:
-        query = select(Transaction, running_total.label("running_total")).where(getattr(Transaction, filter_type) == filter_value).order_by(Transaction.date.asc())
-    else:
-        query = select(Transaction, running_total.label('running_total')).order_by(Transaction.date.asc())
-
-    # Apply offset and limit
-    if offset:
-        query = query.offset(offset)
-    if limit is not None:
-        query = query.limit(limit)
+        query = select(Transaction, running_total.label("running_total")).where(getattr(Transaction, filter_type) == filter_value & Transaction.date < cursor_id).order_by(Transaction.date.desc()).limit(limit+1)
+    else:   
+        query = select(Transaction, running_total.label('running_total')).where(Transaction.date < cursor_id).order_by(Transaction.date.desc()).limit(limit+1)
     
     # Execute query
     results = session.exec(query).all()
     
-    # Reverse to show newest first, but running total is still calculated from oldest
-    results_reversed = list(reversed(results))
+    base_url = str(request.url).split("?")[0]
+    print("base_url: ", base_url)
+
+    next_url = None
+    if len(results) > limit:
+        print("result[-1]: ", results[-1])
+        next_cursor = encode_cursor(results[:limit][-1][0].date)
+        next_url = f"{base_url}?cursor={next_cursor}&limit={limit}"
+        if filter_type and filter_value:
+            next_url += f"&filter_type={filter_type}&filter_value={filter_value}"
     
     # Format the response
     transactions_with_totals = [
@@ -373,10 +397,10 @@ def read_transactions(
             **transaction.model_dump(),
             "running_total": running_total
         }
-        for transaction, running_total in results_reversed
+        for transaction, running_total in results
     ]
     
-    return {"status": 200, "data": transactions_with_totals}
+    return {"status": 200, "data": transactions_with_totals[:limit], "next": next_url}
 
 
 @app.get("/transactions/{transaction_id}")
