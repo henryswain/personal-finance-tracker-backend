@@ -361,35 +361,75 @@ def update_transaction(transaction_id: UUID, transaction: Transaction, session: 
 @app.get("/transactions/")
 def read_transactions(
     session: SessionDep,
-    request: Request,
-    cursor: Optional[str] = None,
+    prev_cursor: Optional[str] = None,
+    next_cursor: Optional[str] = None,
+    direction: Optional[str] = None,
     limit: Optional[int] = Query(None, gt=0, le=100), # Optional, no default, between 1 and 100 if provided,
     filter_type: Optional[str] = None,
     filter_value: Optional[str] = None,
 ) -> dict:
-    cursor_id = encode_cursor(datetime.now().strftime("%Y-%m-%dT%H:%M:%S"))    
-    if cursor:
-        cursor_id= decode_cursor(cursor)
+    # get date and time right now as prev_cursor if no cursor is provided
+    prev_cursor_id = encode_cursor(datetime.now().strftime("%Y-%m-%dT%H:%M:%S")) 
     # Calculate running total ordered by date (oldest first)
     running_total = func.sum(Transaction.amount).over(order_by=Transaction.date.asc())
-    if filter_type and filter_value:
-        query = select(Transaction, running_total.label("running_total")).where(getattr(Transaction, filter_type) == filter_value & Transaction.date < cursor_id).order_by(Transaction.date.desc()).limit(limit+1)
-    else:   
-        query = select(Transaction, running_total.label('running_total')).where(Transaction.date < cursor_id).order_by(Transaction.date.desc()).limit(limit+1)
-    
-    # Execute query
-    results = session.exec(query).all()
-    
-    base_url = str(request.url).split("?")[0]
-    print("base_url: ", base_url)
 
-    next_url = None
-    if len(results) > limit:
-        print("result[-1]: ", results[-1])
-        next_cursor = encode_cursor(results[:limit][-1][0].date)
-        next_url = f"{base_url}?cursor={next_cursor}&limit={limit}"
-        if filter_type and filter_value:
-            next_url += f"&filter_type={filter_type}&filter_value={filter_value}"
+
+    base_query = select(Transaction, running_total.label("running_total"))
+    if filter_type and filter_value:
+        base_query = base_query.where(getattr(Transaction, filter_type) == filter_value)
+
+    if direction == "prev":
+        base_query = base_query.where(Transaction.date > decode_cursor(prev_cursor)).order_by(Transaction.date.asc()).limit(limit+1)
+    elif direction == "next":
+        base_query = base_query.where(Transaction.date < decode_cursor(next_cursor)).order_by(Transaction.date.desc()).limit(limit+1)
+    else:
+        base_query = base_query.where(Transaction.date < decode_cursor(prev_cursor_id)).order_by(Transaction.date.desc()).limit(limit+1)   
+
+    # Execute query
+    results = session.exec(base_query).all()
+    if direction == "prev":
+        results = list(reversed(results))
+
+    hasmore = len(results) > limit
+
+    next_cursor = None
+    prev_cursor = None
+    next_cursor_not_encoded = None
+    prev_cursor_not_encoded = None
+
+
+    # if there are more transactions, set next_cursor to end or results - the 1 extra returned 
+    # and prev_cursor to the first element
+
+    # this allows users to go forward or backwords using the next_cursor or prev_cursor respectively
+    if hasmore:
+        if direction == "prev" or direction == "next":
+            next_cursor = encode_cursor(results[-2][0].date)
+            next_cursor_not_encoded = results[-2][0].date
+            prev_cursor = encode_cursor(results[0][0].date)
+            prev_cursor_not_encoded = results[0][0].date
+        else: 
+            prev_cursor = None
+            prev_cursor_not_encoded = None
+            next_cursor = encode_cursor(results[-2][0].date)
+            next_cursor_not_encoded = results[-2][0].date
+    else:
+        if direction == "prev":
+            prev_cursor = None
+            prev_cursor_not_encoded = None
+            next_cursor = encode_cursor(results[-1][0].date)
+            next_cursor_not_encoded = results[-1][0].date
+        elif direction == "next":
+            next_cursor = None
+            next_cursor_not_encoded = None
+            prev_cursor = encode_cursor(results[0][0].date)
+            prev_cursor_not_encoded = results[0][0].date
+        else:
+            prev_cursor = None
+            prev_cursor_not_encoded = None
+            next_cursor = None
+            next_cursor_not_encoded = None
+
     
     # Format the response
     transactions_with_totals = [
@@ -400,7 +440,7 @@ def read_transactions(
         for transaction, running_total in results
     ]
     
-    return {"status": 200, "data": transactions_with_totals[:limit], "next": next_url}
+    return {"status": 200, "data": transactions_with_totals[:limit], "next": next_cursor, "prev": prev_cursor, "prev_not_encoded": prev_cursor_not_encoded, "next_not_encoded": next_cursor_not_encoded}
 
 
 @app.get("/transactions/{transaction_id}")
