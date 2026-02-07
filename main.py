@@ -358,6 +358,24 @@ def update_transaction(transaction_id: UUID, transaction: Transaction, session: 
     session.refresh(db_transaction)
     return {"status": 200, "data": db_transaction}
 
+def addConditionsToBaseQuery (prev_cursor, next_cursor, direction, limit, filter_type, filter_value, prev_cursor_id, base_query):
+    if filter_type and filter_value:
+        base_query = base_query.where(getattr(Transaction, filter_type) == filter_value)
+    if direction == "prev":
+        base_query = base_query.where(Transaction.date > decode_cursor(prev_cursor)).order_by(Transaction.date.asc()).limit(limit+1)
+    elif direction == "next":
+        base_query = base_query.where(Transaction.date < decode_cursor(next_cursor)).order_by(Transaction.date.desc()).limit(limit+1)
+    else:
+        base_query = base_query.where(Transaction.date < decode_cursor(prev_cursor_id)).order_by(Transaction.date.desc()).limit(limit+1)  
+    return base_query 
+
+def performQuery(base_query, direction, session):
+    results = session.exec(base_query).all()
+    if direction == "prev":
+        results = list(reversed(results))
+    return results
+
+
 @app.get("/transactions/")
 def read_transactions(
     session: SessionDep,
@@ -375,21 +393,9 @@ def read_transactions(
 
 
     base_query = select(Transaction, running_total.label("running_total"))
-    if filter_type and filter_value:
-        base_query = base_query.where(getattr(Transaction, filter_type) == filter_value)
-
-    if direction == "prev":
-        base_query = base_query.where(Transaction.date > decode_cursor(prev_cursor)).order_by(Transaction.date.asc()).limit(limit+1)
-    elif direction == "next":
-        base_query = base_query.where(Transaction.date < decode_cursor(next_cursor)).order_by(Transaction.date.desc()).limit(limit+1)
-    else:
-        base_query = base_query.where(Transaction.date < decode_cursor(prev_cursor_id)).order_by(Transaction.date.desc()).limit(limit+1)   
-
+    base_query = addConditionsToBaseQuery(prev_cursor, next_cursor, direction, limit, filter_type, filter_value, prev_cursor_id, base_query)
     # Execute query
-    results = session.exec(base_query).all()
-    if direction == "prev":
-        results = list(reversed(results))
-
+    results = performQuery(base_query, direction, session)
     hasmore = len(results) > limit
 
     next_cursor = None
@@ -397,24 +403,39 @@ def read_transactions(
     next_cursor_not_encoded = None
     prev_cursor_not_encoded = None
 
+    # Trim the overflow item used for "hasmore" detection
+    if hasmore:
+        if direction == "prev":
+            # After reversal, the overflow item is at the beginning
+            results = results[1:]
+        else:
+            # For "next" or initial load, the overflow item is at the end
+            results = results[:-1]
 
     # if there are more transactions, set next_cursor to end or results - the 1 extra returned 
     # and prev_cursor to the first element
 
     # this allows users to go forward or backwords using the next_cursor or prev_cursor respectively
     if hasmore:
+        print("hasmore: ", hasmore)
         if direction == "prev" or direction == "next":
-            next_cursor = encode_cursor(results[-2][0].date)
-            next_cursor_not_encoded = results[-2][0].date
+            next_cursor = encode_cursor(results[-1][0].date)
+            next_cursor_not_encoded = results[-1][0].date
             prev_cursor = encode_cursor(results[0][0].date)
             prev_cursor_not_encoded = results[0][0].date
         else: 
             prev_cursor = None
             prev_cursor_not_encoded = None
-            next_cursor = encode_cursor(results[-2][0].date)
-            next_cursor_not_encoded = results[-2][0].date
+            next_cursor = encode_cursor(results[-1][0].date)
+            next_cursor_not_encoded = results[-1][0].date
     else:
+        print("hasmore: ", hasmore)
         if direction == "prev":
+            print("results: ", results)
+            if len(results) < limit:
+                base_query = select(Transaction, running_total.label("running_total"))
+                base_query = addConditionsToBaseQuery(None, None, None, limit, filter_type, filter_value, prev_cursor_id, base_query)
+                results = performQuery(base_query, None, session)
             prev_cursor = None
             prev_cursor_not_encoded = None
             next_cursor = encode_cursor(results[-1][0].date)
