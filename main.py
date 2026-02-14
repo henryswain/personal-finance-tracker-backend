@@ -369,12 +369,42 @@ def addConditionsToBaseQuery (prev_cursor, next_cursor, direction, limit, filter
         base_query = base_query.where(Transaction.date < decode_cursor(prev_cursor_id)).order_by(Transaction.date.desc()).limit(limit+1)  
     return base_query 
 
+def getCount (prev_cursor, next_cursor, direction, limit, filter_type, filter_value, prev_cursor_id, base_query):
+    if filter_type and filter_value:
+        base_query = base_query.where(getattr(Transaction, filter_type) == filter_value)
+    if direction == "prev":
+        base_query = base_query.where(Transaction.date > decode_cursor(prev_cursor))
+    elif direction == "next":
+        base_query = base_query.where(Transaction.date >= decode_cursor(next_cursor))
+    else:
+        base_query = base_query.where(Transaction.date < decode_cursor(prev_cursor_id))
+    return base_query 
+
 def performQuery(base_query, direction, session):
     results = session.exec(base_query).all()
     if direction == "prev":
         results = list(reversed(results))
     return results
 
+def update_start_and_end_viewing_numbers(direction, hasmore, count_results, limit, results):
+    viewing_start_number = 1
+    viewing_end_number = -1
+    if direction == "prev" and hasmore:
+        viewing_start_number = count_results[0] + 1 - limit
+        viewing_end_number = count_results[0]
+    if direction == "prev" and not hasmore:
+        viewing_end_number = count_results[0]
+    if direction == "next" and hasmore:
+        viewing_start_number = count_results[0] + 1
+        viewing_end_number = count_results[0] + limit
+    if direction == "next" and not hasmore:
+        viewing_start_number = count_results[0] + 1
+        viewing_end_number = count_results[0] + len(results)
+    if direction != "next" and direction != "prev" and hasmore:
+        viewing_end_number = limit
+    if direction != "next" and direction != "prev" and not hasmore:
+        viewing_end_number = len(results)
+    return viewing_start_number, viewing_end_number
 
 @app.get("/transactions/")
 def read_transactions(
@@ -396,7 +426,14 @@ def read_transactions(
     base_query = addConditionsToBaseQuery(prev_cursor, next_cursor, direction, limit, filter_type, filter_value, prev_cursor_id, base_query)
     # Execute query
     results = performQuery(base_query, direction, session)
+    count_base_query = select(func.count(Transaction.id))
+    count_base_query = getCount(prev_cursor, next_cursor, direction, limit, filter_type, filter_value, prev_cursor_id, count_base_query)
+    count_results = performQuery(count_base_query, direction, session)
     hasmore = len(results) > limit
+
+
+    viewing_start_number, viewing_end_number = update_start_and_end_viewing_numbers(direction, hasmore, count_results, limit, results)
+
 
     next_cursor = None
     prev_cursor = None
@@ -461,7 +498,14 @@ def read_transactions(
         for transaction, running_total in results
     ]
     
-    return {"status": 200, "data": transactions_with_totals[:limit], "next": next_cursor, "prev": prev_cursor, "prev_not_encoded": prev_cursor_not_encoded, "next_not_encoded": next_cursor_not_encoded}
+    return {"status": 200, 
+            "data": transactions_with_totals[:limit], 
+            "next": next_cursor, 
+            "prev": prev_cursor, 
+            "prev_not_encoded": prev_cursor_not_encoded, 
+            "next_not_encoded": next_cursor_not_encoded, 
+            "start_number": viewing_start_number,
+            "end_number": viewing_end_number}
 
 
 @app.get("/transactions/{transaction_id}")
