@@ -292,8 +292,6 @@ def delete_pot_item(pot_item_id: UUID, session: SessionDep) -> dict:
     session.commit()
     return {"ok": True}
 
-
-
 @app.get("/transactions/{transaction_id}")
 def read_transaction(transaction_id: UUID, session: SessionDep) -> dict:
     transaction = session.get(Transaction, transaction_id)
@@ -365,6 +363,8 @@ def addConditionsToBaseQuery (prev_cursor, next_cursor, direction, limit, filter
         base_query = base_query.where(Transaction.date > decode_cursor(prev_cursor)).order_by(Transaction.date.asc()).limit(limit+1)
     elif direction == "next":
         base_query = base_query.where(Transaction.date < decode_cursor(next_cursor)).order_by(Transaction.date.desc()).limit(limit+1)
+    elif direction == "refresh":
+        base_query = base_query.where(Transaction.date <= decode_cursor(prev_cursor)).order_by(Transaction.date.desc()).limit(limit+1)
     else:
         base_query = base_query.where(Transaction.date < decode_cursor(prev_cursor_id)).order_by(Transaction.date.desc()).limit(limit+1)  
     return base_query 
@@ -376,6 +376,8 @@ def getCount (prev_cursor, next_cursor, direction, limit, filter_type, filter_va
         base_query = base_query.where(Transaction.date > decode_cursor(prev_cursor))
     elif direction == "next":
         base_query = base_query.where(Transaction.date >= decode_cursor(next_cursor))
+    elif direction == "refresh":
+        base_query = base_query.where(Transaction.date > decode_cursor(prev_cursor))
     else:
         base_query = base_query.where(Transaction.date < decode_cursor(prev_cursor_id))
     return base_query 
@@ -400,9 +402,15 @@ def update_start_and_end_viewing_numbers(direction, hasmore, count_results, limi
     if direction == "next" and not hasmore:
         viewing_start_number = count_results[0] + 1
         viewing_end_number = count_results[0] + len(results)
-    if direction != "next" and direction != "prev" and hasmore:
+    if direction == "refresh" and hasmore:
+        viewing_start_number = count_results[0] + 1
+        viewing_end_number = count_results[0] + limit
+    if direction == "refresh" and not hasmore:
+        viewing_start_number = count_results[0] + 1
+        viewing_end_number = count_results[0] + len(results)
+    if direction != "next" and direction != "prev" and direction != "refresh" and hasmore:
         viewing_end_number = limit
-    if direction != "next" and direction != "prev" and not hasmore:
+    if direction != "next" and direction != "prev" and direction != "refresh" and not hasmore:
         viewing_end_number = len(results)
     return viewing_start_number, viewing_end_number
 
@@ -455,7 +463,7 @@ def read_transactions(
     # this allows users to go forward or backwords using the next_cursor or prev_cursor respectively
     if hasmore:
         print("hasmore: ", hasmore)
-        if direction == "prev" or direction == "next":
+        if direction == "prev" or direction == "next" or direction == "refresh":
             next_cursor = encode_cursor(results[-1][0].date)
             next_cursor_not_encoded = results[-1][0].date
             prev_cursor = encode_cursor(results[0][0].date)
@@ -477,7 +485,7 @@ def read_transactions(
             prev_cursor_not_encoded = None
             next_cursor = encode_cursor(results[-1][0].date)
             next_cursor_not_encoded = results[-1][0].date
-        elif direction == "next":
+        elif direction == "next" or direction == "refresh":
             next_cursor = None
             next_cursor_not_encoded = None
             prev_cursor = encode_cursor(results[0][0].date)
