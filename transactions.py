@@ -1,7 +1,8 @@
 import base64
 import json
 from uuid import UUID
-from models import Transaction
+from models import Transaction, User
+from jwt_auth import get_current_user
 from datetime import datetime
 from typing import Annotated, Optional
 from fastapi import Depends, HTTPException, Query, APIRouter
@@ -34,7 +35,10 @@ def decode_cursor(cursor):
         raise HTTPException(status_code=400, detail="Invalid cursor")
 
 @transactions_router.post("/new")
-def create_transaction(transaction: Transaction, session: SessionDep) -> dict:
+def create_transaction(
+        transaction: Transaction,
+        current_user: Annotated[User, Depends(get_current_user)],
+        session: SessionDep) -> dict:
     now = datetime.now()
     print("now: ", now)
     currentTime = now.strftime("%H:%M:%S")
@@ -42,6 +46,7 @@ def create_transaction(transaction: Transaction, session: SessionDep) -> dict:
     
     # Create a Transaction object, not a dictionary
     newTransaction = Transaction(
+        username=current_user.username,
         amount=transaction.amount,
         title=transaction.title,
         memo=transaction.memo,
@@ -116,6 +121,7 @@ def update_start_and_end_viewing_numbers(direction, hasmore, count_results, limi
 @transactions_router.get("/")
 def read_transactions(
     session: SessionDep,
+    current_user: Annotated[User, Depends(get_current_user)],
     prev_cursor: Optional[str] = None,
     next_cursor: Optional[str] = None,
     direction: Optional[str] = None,
@@ -129,11 +135,11 @@ def read_transactions(
     running_total = func.sum(Transaction.amount).over(order_by=Transaction.date.asc())
 
 
-    base_query = select(Transaction, running_total.label("running_total"))
+    base_query = select(Transaction, running_total.label("running_total")).where(Transaction.username == current_user.username)
     base_query = addConditionsToBaseQuery(prev_cursor, next_cursor, direction, limit, filter_type, filter_value, prev_cursor_id, base_query)
     # Execute query
     results = performQuery(base_query, direction, session)
-    count_base_query = select(func.count(Transaction.id))
+    count_base_query = select(func.count(Transaction.id)).where(Transaction.username == current_user.username)
     count_base_query = getCount(prev_cursor, next_cursor, direction, limit, filter_type, filter_value, prev_cursor_id, count_base_query)
     count_results = performQuery(count_base_query, direction, session)
     hasmore = len(results) > limit
@@ -177,7 +183,7 @@ def read_transactions(
         if direction == "prev":
             print("results: ", results)
             if len(results) < limit:
-                base_query = select(Transaction, running_total.label("running_total"))
+                base_query = select(Transaction, running_total.label("running_total")).where(Transaction.username == current_user.username)
                 base_query = addConditionsToBaseQuery(None, None, None, limit, filter_type, filter_value, prev_cursor_id, base_query)
                 results = performQuery(base_query, None, session)
             prev_cursor = None
@@ -216,15 +222,22 @@ def read_transactions(
 
 
 @transactions_router.get("/{transaction_id}")
-def read_transaction(transaction_id: UUID, session: SessionDep) -> dict:
-    transaction = session.get(Transaction, transaction_id)
+def read_transaction(
+        transaction_id: UUID, 
+        current_user: Annotated[User, Depends(get_current_user)],
+        session: SessionDep) -> dict:
+    transaction = session.exec(select(Transaction).where((Transaction.id == transaction_id) & (Transaction.username == current_user.username)))
     if not transaction:
-        raise HTTPException(status_code=404, detail="Hero not found")
+        raise HTTPException(status_code=404, detail="Transaction not found")
     return {"status": 200, "data": transaction}
 
 @transactions_router.patch("/{transaction_id}")
-def update_transaction(transaction_id: UUID, transaction: Transaction, session: SessionDep) -> dict:
-    db_transaction = session.get(Transaction, transaction_id)
+def update_transaction(
+        transaction_id: UUID, 
+        transaction: Transaction, 
+        current_user: Annotated[User, Depends(get_current_user)],
+        session: SessionDep) -> dict:
+    db_transaction = session.exec(select(Transaction).where((Transaction.id == transaction_id) & (Transaction.username == current_user.username)))
     if not db_transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
     
@@ -247,10 +260,13 @@ def update_transaction(transaction_id: UUID, transaction: Transaction, session: 
     return {"status": 200, "data": db_transaction}
 
 @transactions_router.delete("/{transaction_id}")
-def delete_transaction(transaction_id: UUID, session: SessionDep) -> dict:
-    transaction = session.get(Transaction, transaction_id)
+def delete_transaction(
+        transaction_id: UUID, 
+        current_user: Annotated[User, Depends(get_current_user)],
+        session: SessionDep) -> dict:
+    transaction = session.exec(select(Transaction).where((Transaction.id == transaction_id) & (Transaction.username == current_user.username)))
     if not transaction:
-        raise HTTPException(status_code=404, detail="Hero not found")
+        raise HTTPException(status_code=404, detail="Transaction not found")
     session.delete(transaction)
     session.commit()
     return {"ok": True}

@@ -1,5 +1,6 @@
 
-from models import PotItem, Pot
+from models import PotItem, Pot, User
+from jwt_auth import get_current_user
 from datetime import datetime
 from uuid import UUID, uuid4
 from sqlalchemy import case
@@ -17,8 +18,12 @@ SessionDep = Annotated[Session, Depends(get_session)]
 pot_items_router = APIRouter()
 
 @pot_items_router.post("/new/{pot_id}")
-def create_pot_item(pot_item: PotItem, pot_id: str, session: SessionDep) -> dict:
-    db_pot = session.exec(select(Pot).where(Pot.pot_id == pot_id)).first()
+def create_pot_item(pot_item: PotItem, 
+                    pot_id: str, 
+                    session: SessionDep,
+                    current_user: Annotated[User, Depends(get_current_user)],
+                    ) -> dict:
+    db_pot = session.exec(select(Pot).where((Pot.pot_id == pot_id) & (Pot.username == current_user.username))).first()
     if not db_pot:
         raise HTTPException(status_code=404, detail="Pot not found")
     
@@ -30,6 +35,7 @@ def create_pot_item(pot_item: PotItem, pot_id: str, session: SessionDep) -> dict
     # Create a PotItem object
     newPotItem = PotItem(
         pot_id=pot_id,
+        username=current_user.username,
         amount=pot_item.amount,
         title=pot_item.title,
         transfer_from=pot_item.transfer_from,
@@ -47,12 +53,13 @@ def create_pot_item(pot_item: PotItem, pot_id: str, session: SessionDep) -> dict
 @pot_items_router.get("/pots/{pot_id}")
 def read_pot_items(
     pot_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
     session: SessionDep,
     offset: int = 0,
     limit: Optional[int] = Query(None, gt=0, le=100), # Optional, no default, between 1 and 100 if provided,
 ) -> dict:
     # Get the pot to verify it exists and get its title (which is the account name)
-    pot = session.get(Pot, pot_id)
+    pot = session.exec(select(Pot).where((Pot.pot_id == pot_id) & (Pot.username == current_user.username))).first()
     if not pot:
         raise HTTPException(status_code=404, detail="Pot not found")
     
@@ -72,7 +79,8 @@ def read_pot_items(
     
     # Filter to only items where account_name is involved in transfer_to OR transfer_from
     query = select(PotItem, running_total.label('running_total')).where(
-        (PotItem.transfer_to == account_name) | (PotItem.transfer_from == account_name)
+        (PotItem.username == current_user.username) &
+        ((PotItem.transfer_to == account_name) | (PotItem.transfer_from == account_name))
     ).order_by(PotItem.date.asc())
 
     # Apply offset and limit
@@ -99,16 +107,23 @@ def read_pot_items(
     return {"status": 200, "data": pot_items_with_totals}
 
 @pot_items_router.get("/{pot_item_id}")
-def read_pot_item(pot_item_id: UUID, session: SessionDep) -> dict:
-    pot_item = session.get(PotItem, pot_item_id)
+def read_pot_item(
+        pot_item_id: UUID,
+        current_user: Annotated[User, Depends(get_current_user)], 
+        session: SessionDep) -> dict:
+    pot_item = session.exec(select(PotItem).where((PotItem.pot_item_id == pot_item_id) & (PotItem.username == current_user.username)))
     if not pot_item:
-        raise HTTPException(status_code=404, detail="Hero not found")
+        raise HTTPException(status_code=404, detail="Pot item not found")
     return {"status": 200, "data": pot_item}
 
 @pot_items_router.patch("/{pot_item_id}")
-def update_pot_item(pot_item_id: UUID, pot_item: PotItem, session: SessionDep) -> dict:
+def update_pot_item(
+        pot_item_id: UUID, 
+        current_user: Annotated[User, Depends(get_current_user)],
+        pot_item: PotItem, 
+        session: SessionDep) -> dict:
     # Get the pot item using pot_item_id from URL
-    db_pot_item = session.get(PotItem, pot_item_id)
+    db_pot_item = session.exec(select(PotItem).where((PotItem.pot_item_id == pot_item_id) & (PotItem.username == current_user.username)))
     if not db_pot_item:
         raise HTTPException(status_code=404, detail="Pot item not found")
     
@@ -116,7 +131,7 @@ def update_pot_item(pot_item_id: UUID, pot_item: PotItem, session: SessionDep) -
     previous_amount = db_pot_item.amount
     
     # Get the pot
-    db_pot = session.get(Pot, db_pot_item.pot_id)
+    db_pot = session.exec(select(Pot).where((Pot.pot_id == db_pot_item.pot_id) & (Pot.username == current_user.username)))
     if not db_pot:
         raise HTTPException(status_code=404, detail="Pot not found")
     
@@ -142,8 +157,11 @@ def update_pot_item(pot_item_id: UUID, pot_item: PotItem, session: SessionDep) -
     return {"status": 200, "data": db_pot_item}
 
 @pot_items_router.delete("/{pot_item_id}")
-def delete_pot_item(pot_item_id: UUID, session: SessionDep) -> dict:
-    pot_item = session.get(PotItem, pot_item_id)
+def delete_pot_item(
+        pot_item_id: UUID, 
+        current_user: Annotated[User, Depends(get_current_user)],
+        session: SessionDep) -> dict:
+    pot_item = session.exec(select(PotItem).where((PotItem.pot_item_id == pot_item_id) & (PotItem.username == current_user.username)))
     if not pot_item:
         raise HTTPException(status_code=404, detail="Pot item not found")
     session.delete(pot_item)
